@@ -1,0 +1,90 @@
+name: Release
+
+# 主流 Tauri 发布方式：用官方 tauri-apps/tauri-action 在 CI 里构建 + 签名 + 建（草稿）Release
+# + 上传产物，并（有 updater key 时）自动生成 latest.json 供内置更新器使用。
+# winget / Scoop 的提交在「发布草稿后」由 release-publish.yml 处理（on: release: published），
+# 解耦后即使二者失败也不会回滚已发布的 Release。
+#
+# 触发：
+#   1. push 一个 v* tag（如 v0.0.1）→ 构建+签名并建成草稿 Release（含 latest.json + 便携 zip）。
+#   2. workflow_dispatch → 手动触发，用于测试管线：
+#        - publish=false（默认）：只构建+签名，不建 Release。（适合验证构建/签名链路）
+#        - publish=true：建成草稿 Release。
+# 草稿 Release 确认无误后，在 GitHub 页面手动「Publish」即触发 release-publish.yml 提交 winget/Scoop。
+#
+# 所需 Secrets（仅本文件用到）：
+#   TAURI_SIGNING_PRIVATE_KEY          必需：updater 签名，缺失则作业失败
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD 可选：key 密码（本仓库为空密码）
+#   WINDOWS_CERTIFICATE                可选：Authenticode pfx(base64)，缺失则跳过代码签名
+#   WINDOWS_CERTIFICATE_PASSWORD       可选：pfx 导出密码
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Build a (draft) GitHub Release? false = build & sign only (no winget/Scoop).'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布（Windows）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # 快速门禁：前端单测（~9s），红了就不浪费后续构建时间
+      - run: npm ci
+      - run: npm run test:unit
+
+      # tauri-action 执行 tauri build（含 beforeBuildCommand = npm run build），
+      # 读取以下密钥后产出 msi/nsis + .sig + latest.json：
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        with:
+          tagName: 'v__VERSION__'
+          releaseName: 'rhyzal v__VERSION__'
+          releaseBody: 'See the assets to download and install.'
+          # 永远先建成草稿，确认无误后再手动发布，避免误发
+          releaseDraft: true
+          prerelease: false
+          # 仅 push tag 或手动勾选 publish 时才建 Release；否则只验证构建+签名
+          includeRelease: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
+          args: ''
+
+      # 额外产出便携 zip（供 Scoop / 便携用户），上传到本次 Release
+      - name: Package portable zip and upload
+        if: github.event_name == 'push' || github.event.inputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ver = $env:GITHUB_REF_NAME -replace '^v',''
+          $exe = "src-tauri/target/release/rhyzal.exe"
+          $zip = "rhyzal_${ver}_x64_portable.zip"
+          Compress-Archive -Path $exe -DestinationPath $zip -Force
+          gh release upload $env:GITHUB_REF_NAME $zip --clobber

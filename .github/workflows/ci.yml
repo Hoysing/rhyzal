@@ -1,0 +1,62 @@
+name: CI
+
+# 每次推送与 PR 都跑一遍三层测试：前端单测 / Rust 测试 / 端到端。
+# 之前这些只靠本地手工触发，改了代码没人拦得住。
+on:
+  push:
+    branches: [master, main]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: 前端单测（Vitest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:unit
+
+  rust:
+    name: Rust 测试（单元 + 集成契约）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      # 契约测试会读写本机真实的任务计划服务，所以只能在 Windows 上跑
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  e2e:
+    name: 端到端（Playwright + Edge）
+    runs-on: windows-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # 不下载 Playwright 自带浏览器：配置里用的是系统 Edge，
+      # 与桌面端同内核，行为更接近真实运行环境
+      - run: npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-trace
+          path: test-results
+          retention-days: 7

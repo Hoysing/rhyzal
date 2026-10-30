@@ -1,0 +1,66 @@
+name: Publish package managers
+
+# 解耦于 release.yml：仅当草稿 Release 在 GitHub 页面被「Publish」后才触发。
+# 此时 Release 资产（msi / nsis / 便携 zip / latest.json）均已稳定可读，
+# 本工作流据此自动提交 winget 清单（PR → microsoft/winget-pkgs）并推送 Scoop 清单到 Hoysing/scoop-bucket。
+# 即便此处失败，也不会回滚已发布的 Release。
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write   # 供 winget-releaser 开 PR；Scoop 推桶用独立的 SCOOP_BUCKET_TOKEN
+
+jobs:
+  winget:
+    name: Submit to winget (PR → microsoft/winget-pkgs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vedantmgoyal2009/winget-releaser@v1
+        with:
+          identifier: Hoysing.Rhyzal
+          # 取发布事件的 tag（如 v0.0.1）；action 据此读取该 Release 的 msi 资产
+          version: ${{ github.event.release.tag_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          installers-regex: '\.msi$'
+          # 若默认 GITHUB_TOKEN 无法开 PR，再补一个 PAT 权限的 WINGET_TOKEN 并在此替换 token
+
+  scoop:
+    name: Publish to Scoop bucket (Hoysing/scoop-bucket)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download portable zip, compute hash, write manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#v}"
+          ASSET="rhyzal_${VER}_x64_portable.zip"
+          gh release download "$TAG" -p "$ASSET" -D ./dl
+          HASH=$(sha256sum "./dl/$ASSET" | awk '{print $1}')
+          URL="https://github.com/Hoysing/rhyzal/releases/download/$TAG/$ASSET"
+          jq -n \
+            --arg v "$VER" \
+            --arg url "$URL" \
+            --arg hash "$HASH" \
+            '{version:$v, description:"Cron-powered GUI for Windows Task Scheduler, focused on the tasks you created.", homepage:"https://github.com/Hoysing/rhyzal", license:"MIT", architecture:{64bit:{url:$url, hash:$hash}}, bin:"rhyzal.exe", checkver:"github", autoupdate:{architecture:{64bit:{url:$url}}}}' > rhyzal.json
+          cat rhyzal.json
+
+      - name: Push to Hoysing/scoop-bucket
+        env:
+          TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::SCOOP_BUCKET_TOKEN secret is not set; cannot push to Hoysing/scoop-bucket"
+            exit 1
+          fi
+          git clone https://x-access-token:${TOKEN}@github.com/Hoysing/scoop-bucket.git bucket
+          cp rhyzal.json bucket/
+          cd bucket
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add rhyzal.json
+          git commit -m "rhyzal $VER"
+          git push
