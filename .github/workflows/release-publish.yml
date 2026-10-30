@@ -10,21 +10,23 @@ on:
     types: [published]
 
 permissions:
-  contents: write   # 供 winget-releaser 开 PR；Scoop 推桶用独立的 SCOOP_BUCKET_TOKEN
+  contents: write   # 仅供 Scoop 任务的 gh release download 使用；
+                    # winget 用独立 WINGET_TOKEN，Scoop 推桶用独立 SCOOP_BUCKET_TOKEN
 
 jobs:
   winget:
     name: Submit to winget (PR → microsoft/winget-pkgs)
-    runs-on: ubuntu-latest
+    runs-on: windows-latest   # winget-releaser 要求运行在 Windows runner 上
     steps:
       - uses: vedantmgoyal2009/winget-releaser@v1
         with:
           identifier: Hoysing.Rhyzal
           # 取发布事件的 tag（如 v0.0.1）；action 据此读取该 Release 的 msi 资产
           version: ${{ github.event.release.tag_name }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # 必须用经典 PAT（WINGET_TOKEN，public_repo 权限）。默认的 GITHUB_TOKEN 无法
+          # fork / 推送 microsoft/winget-pkgs，故不可用；细粒度 PAT 也不被该 action 支持。
+          token: ${{ secrets.WINGET_TOKEN }}
           installers-regex: '\.msi$'
-          # 若默认 GITHUB_TOKEN 无法开 PR，再补一个 PAT 权限的 WINGET_TOKEN 并在此替换 token
 
   scoop:
     name: Publish to Scoop bucket (Hoysing/scoop-bucket)
