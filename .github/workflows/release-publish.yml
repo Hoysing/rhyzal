@@ -21,9 +21,10 @@ jobs:
       - uses: vedantmgoyal2009/winget-releaser@v1
         with:
           identifier: Hoysing.Rhyzal
+          # 不显式传 version：action 默认取 Release tag 并自动去掉 v 前缀（v0.0.1 → 0.0.1），
+          # 与 wingetcreate 首次注册时从 msi 文件名推导出的版本一致。
           # 取发布事件的 tag（如 v0.0.1）；action 据此读取该 Release 的 msi 资产
-          version: ${{ github.event.release.tag_name }}
-          # 必须用经典 PAT（WINGET_TOKEN，public_repo 权限）。默认的 GITHUB_TOKEN 无法
+          # 必须用经典 PAT（WINGET_TOKEN，public_repo + workflow 权限）。默认的 GITHUB_TOKEN 无法
           # fork / 推送 microsoft/winget-pkgs，故不可用；细粒度 PAT 也不被该 action 支持。
           token: ${{ secrets.WINGET_TOKEN }}
           installers-regex: '\.msi$'
